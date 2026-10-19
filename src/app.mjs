@@ -225,10 +225,25 @@ function renderEvidenceCard(report) {
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Cross-check status']), element('p', {}, [report.evidence.crossCheckMessage])]));
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Section completeness']), element('p', {}, [`Ingredients: ${statusLabel(report.evidence.sectionStatus.ingredients)} · Nutrition: ${statusLabel(report.evidence.sectionStatus.nutrition)}`])]));
   const dualText = report.evidence.dualValidation.length
-    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.models.length ? ` (${validation.models.join(' + ')})` : ''}`).join(' · ')
+    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.correctionStatus && validation.correctionStatus !== 'not_run' ? ` · ${validation.correctionStatus.replaceAll('_', ' ')}` : ''}${validation.models.length ? ` (${validation.models.join(' + ')})` : ''}`).join(' · ')
     : 'Not run. The deterministic OCR transcription remains the source for analysis.';
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Independent validators']), element('p', {}, [dualText])]));
   card.append(grid);
+  for (const validation of report.evidence.dualValidation) {
+    if (validation.correctionStatus === 'confirmed_correction' && validation.consensusText) {
+      card.append(element('div', { className: 'llm-correction confirmed' }, [
+        element('strong', {}, [`LLM correction confirmed for ${validation.kind}`]),
+        element('p', {}, ['Both independent validators agreed on this corrected transcription, which was used for the deterministic analysis:']),
+        element('pre', {}, [validation.consensusText]),
+      ]));
+    } else if (validation.status === 'conflict') {
+      card.append(element('div', { className: 'llm-correction conflict' }, [
+        element('strong', {}, [`LLM conflict for ${validation.kind}`]),
+        element('p', {}, ['The validators returned different interpretations. No LLM correction was applied; verify the image manually.']),
+        ...validation.correctedTexts.map((text, index) => element('pre', {}, [`Validator ${index + 1}:\n${text}`])),
+      ]));
+    }
+  }
   card.append(element('ul', { className: 'source-list' }, report.evidence.sources.map((source) => element('li', {}, [source]))));
   if (report.missingRequests.length) card.append(element('div', { className: 'alert' }, [report.missingRequests.join(' ')]));
   card.append(element('p', { className: 'score-note' }, ['Ingredient explanations are typical-purpose descriptions, not a complete additive specification. Ingredient order does not reveal exact percentages. Values marked derived are conversions, not declarations visible on the package. A medical professional or manufacturer should answer medical, allergy and regulatory questions.']));
@@ -262,6 +277,7 @@ const imageRefs = {
     name: $('#ingredients-image-name'),
     size: $('#ingredients-image-size'),
     button: $('#ingredients-ocr'),
+    validateButton: $('#ingredients-validate'),
     status: $('#ingredients-ocr-status'),
     text: $('#ingredient-text'),
   },
@@ -272,6 +288,7 @@ const imageRefs = {
     name: $('#nutrition-image-name'),
     size: $('#nutrition-image-size'),
     button: $('#nutrition-ocr'),
+    validateButton: $('#nutrition-validate'),
     status: $('#nutrition-ocr-status'),
     text: $('#nutrition-text'),
   },
@@ -291,6 +308,7 @@ function setSelectedImage(kind, file) {
   validationResults[kind] = null;
   const refs = imageRefs[kind];
   refs.button.disabled = !file;
+  refs.validateButton.disabled = true;
   if (!file) {
     refs.preview.classList.add('hidden');
     setOcrStatus(kind, 'Choose a clear, tightly cropped image.');
@@ -324,6 +342,7 @@ async function runOcr(kind) {
     ocrConfidence[kind] = payload.confidence;
     validationComplete[kind] = false;
     validationResults[kind] = null;
+    refs.validateButton.disabled = !payload.text;
     if (payload.text) {
       const confidence = payload.confidence === null ? 'confidence unavailable' : `${payload.confidence}% confidence estimate`;
       setOcrStatus(kind, `OCR complete · ${confidence}. Review the transcription against the image.`, 'success');
@@ -345,6 +364,7 @@ async function runDualValidation(kind) {
   if (!file || !ocrText || validationComplete[kind]) return validationResults[kind];
   const refs = imageRefs[kind];
   refs.button.disabled = true;
+  refs.validateButton.disabled = true;
   setOcrStatus(kind, 'OCR complete. Running two local validators sequentially…', 'busy');
   try {
     const formData = new FormData();
@@ -357,7 +377,12 @@ async function runDualValidation(kind) {
     validationResults[kind] = payload;
     validationComplete[kind] = true;
     if (payload.comparison.status === 'agreement') {
-      setOcrStatus(kind, `OCR + two validators agree. Review the image before relying on the result.`, 'success');
+      if (payload.comparison.correctionStatus === 'confirmed_correction' && payload.comparison.consensusText) {
+        refs.text.value = payload.comparison.consensusText;
+        setOcrStatus(kind, 'Both validators agreed and corrected the OCR transcription. Review the corrected text against the image.', 'success');
+      } else {
+        setOcrStatus(kind, 'OCR + two validators agree. Review the image before relying on the result.', 'success');
+      }
     } else {
       setOcrStatus(kind, 'The two validators disagree. Review the highlighted uncertainty in the report.', 'error');
     }
@@ -373,15 +398,18 @@ async function runDualValidation(kind) {
     return validationResults[kind];
   } finally {
     refs.button.disabled = false;
+    refs.validateButton.disabled = !refs.text.value.trim();
   }
 }
 
 for (const [kind, refs] of Object.entries(imageRefs)) {
   refs.input.addEventListener('change', (event) => setSelectedImage(kind, event.target.files?.[0] || null));
   refs.button.addEventListener('click', () => runOcr(kind));
+  refs.validateButton.addEventListener('click', () => runDualValidation(kind));
   refs.text.addEventListener('input', () => {
     validationComplete[kind] = false;
     validationResults[kind] = null;
+    refs.validateButton.disabled = !selectedImages[kind] || !refs.text.value.trim();
   });
 }
 

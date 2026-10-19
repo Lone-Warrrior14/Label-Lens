@@ -152,13 +152,15 @@ test('missing ingredients leave allergen status unknown', () => {
 });
 
 test('accepts fenced validator JSON and confirms equivalent independent facts', () => {
-  const parsed = parseValidatorJson('```json\n{"facts":[{"key":"energy","value":"135","unit":"kcal","basis":"per_serving"}]}\n```');
+  const parsed = parseValidatorJson('```json\n{"corrected_text":"Energy 135 kcal","facts":[{"key":"energy","value":"135","unit":"kcal","basis":"per_serving"}]}\n```');
   const comparison = compareValidatorResults([
     { status: 'ok', parsed },
-    { status: 'ok', parsed: { facts: [{ key: 'ENERGY', value: 135, unit: 'KCAL', basis: 'PER_SERVING' }] } },
+    { status: 'ok', parsed: { corrected_text: 'Energy 135 kcal', facts: [{ key: 'ENERGY', value: 135, unit: 'KCAL', basis: 'PER_SERVING' }] } },
   ]);
   assert.equal(comparison.status, 'agreement');
   assert.equal(comparison.agreedFacts[0].value, '135');
+  assert.equal(comparison.correctionStatus, 'confirmed_correction');
+  assert.equal(comparison.consensusText, 'Energy 135 kcal');
 });
 
 test('treats alternate ingredient keys as agreement when ordered visible values match', () => {
@@ -167,6 +169,18 @@ test('treats alternate ingredient keys as agreement when ordered visible values 
     { status: 'ok', parsed: { facts: [{ key: 'wheat flour', value: 'wheat flour', basis: 'unknown' }] } },
   ]);
   assert.equal(comparison.status, 'agreement');
+});
+
+test('uses matching corrected transcriptions when validator JSON formatting differs', () => {
+  const correctedText = 'Nutrition Information\nEnergy 135 kcal (565 kJ)';
+  const comparison = compareValidatorResults([
+    { status: 'ok', parsed: { corrected_text: correctedText, facts: [{ key: 'stable field key or energy', value: '135', unit: 'kcal', basis: 'per serving' }] } },
+    { status: 'ok', parsed: { corrected_text: correctedText, facts: [{ key: 'Energy', value: '135', unit: 'kcal (565 kJ)', basis: 'per serving' }] } },
+  ], { kind: 'nutrition', ocrText: 'Energy 135 kcal (565 kJ)' });
+  assert.equal(comparison.status, 'agreement');
+  assert.equal(comparison.correctionStatus, 'confirmed_correction');
+  assert.equal(comparison.consensusText, correctedText);
+  assert.equal(comparison.factConflicts.length, 1);
 });
 
 test('does not choose a winner when independent validators disagree', () => {

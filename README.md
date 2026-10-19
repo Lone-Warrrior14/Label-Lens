@@ -79,7 +79,7 @@ In the form:
 6. Optionally enter a planned quantity for a defensible calorie calculation.
 7. Mark the two visual cross-check boxes only after comparing each transcription with its image.
 
-The individual **Extract ingredients with OCR** and **Extract nutrition with OCR** buttons can be used before submitting the report. If an image is missing or unreadable, the report explicitly requests another image or manual entry and does not call itself a full-label analysis.
+The individual **Extract ingredients with OCR**, **Extract nutrition with OCR**, and **Run two-LLM validation** buttons can be used before submitting the report. When both validators agree on a correction, the corrected transcription is applied and shown in the report. When they disagree, neither correction is applied and both outputs remain a visible conflict for review. If an image is missing or unreadable, the report explicitly requests another image or manual entry and does not call itself a full-label analysis.
 
 ## Test
 

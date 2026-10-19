@@ -172,6 +172,7 @@ function validatorPrompt(kind, ocrText) {
 Return JSON only with this exact shape:
 {
   "section_status": "present" | "partial" | "unreadable",
+  "corrected_text": "exact complete transcription supported by the image, preserving line order and visible units",
   "facts": [
     {"key": "stable field key or ingredient_1", "value": "exact visible value", "unit": "visible unit or empty", "basis": "visible basis or unknown", "evidence": "short exact text from image"}
   ],
@@ -230,7 +231,7 @@ async function handleDualValidation(request, response) {
     // Deliberately sequential: only one vision model is loaded at a time on a small GPU.
     const results = [];
     for (const model of models) results.push(await callOllamaValidator(model, image.data, kind, ocrText));
-    json(response, 200, { kind, models, validators: results, comparison: compareValidatorResults(results), engine: 'local Ollama sequential dual validation' });
+    json(response, 200, { kind, models, validators: results, comparison: compareValidatorResults(results, { kind, ocrText }), engine: 'local Ollama sequential dual validation' });
   } catch (error) {
     console.error('Dual validation failed:', error);
     json(response, 503, { error: `Dual validation unavailable: ${error.message}` });

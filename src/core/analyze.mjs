@@ -127,6 +127,9 @@ function buildEvidence({ images, imageChecks, ingredients, nutrition }) {
     dualValidation: imageList.map((image) => ({
       kind: image.kind,
       status: image.validation?.comparison?.status || 'not_run',
+      correctionStatus: image.validation?.comparison?.correctionStatus || 'not_run',
+      consensusText: image.validation?.comparison?.consensusText || null,
+      correctedTexts: image.validation?.comparison?.correctedTexts || [],
       models: image.validation?.models || [],
       conflicts: image.validation?.comparison?.conflicts || [],
     })),
