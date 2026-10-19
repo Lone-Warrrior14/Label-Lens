@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en-IN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="LabelLens analyses the ingredient list and nutrition panel without inventing missing label values.">
+    <title>LabelLens · Complete label analysis</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="#top" aria-label="LabelLens home">
+          <span class="brand-mark" aria-hidden="true">L</span>
+          <span>Label<span class="brand-light">Lens</span></span>
+        </a>
+        <span class="header-note">Evidence-first food label analysis</span>
+      </div>
+    </header>
+
+    <main id="top" class="page-shell">
+      <section class="hero">
+        <div class="eyebrow">Complete label review · India profile</div>
+        <h1>See what is actually on the label.</h1>
+        <p class="hero-copy">Upload one clear image of the ingredient list and one clear image of the nutrition panel. Local OCR transcribes both sections, then LabelLens keeps the original order, units and uncertainty visible instead of guessing.</p>
+      </section>
+
+      <section class="input-card" aria-labelledby="input-heading">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">Step 01</div>
+            <h2 id="input-heading">Add label evidence</h2>
+          </div>
+          <span class="privacy-chip"><span class="dot"></span>Processed locally</span>
+        </div>
+
+        <form id="analysis-form">
+          <div class="field-grid two-col">
+            <label class="field">
+              <span class="field-label">Product name <span class="optional">optional</span></span>
+              <input id="product-name" name="productName" type="text" placeholder="e.g. Chocolate oat bar">
+            </label>
+          </div>
+
+          <div class="image-upload-grid">
+            <div class="image-upload-card">
+              <div class="field-label"><span class="required-number">1</span> Ingredient image <span class="required">required for OCR</span></div>
+              <input id="ingredients-image" type="file" accept="image/*">
+              <div id="ingredients-preview" class="image-preview hidden" aria-live="polite">
+                <img id="ingredients-preview-image" alt="Ingredient list image preview">
+                <div><strong id="ingredients-image-name">Image selected</strong><span id="ingredients-image-size" class="muted-line"></span></div>
+              </div>
+              <button id="ingredients-ocr" class="secondary-button" type="button" disabled>Extract ingredients with OCR</button>
+              <span id="ingredients-ocr-status" class="ocr-status" aria-live="polite">Choose a clear, tightly cropped image.</span>
+            </div>
+            <div class="image-upload-card">
+              <div class="field-label"><span class="required-number">2</span> Nutrition image <span class="required">required for OCR</span></div>
+              <input id="nutrition-image" type="file" accept="image/*">
+              <div id="nutrition-preview" class="image-preview hidden" aria-live="polite">
+                <img id="nutrition-preview-image" alt="Nutrition label image preview">
+                <div><strong id="nutrition-image-name">Image selected</strong><span id="nutrition-image-size" class="muted-line"></span></div>
+              </div>
+              <button id="nutrition-ocr" class="secondary-button" type="button" disabled>Extract nutrition with OCR</button>
+              <span id="nutrition-ocr-status" class="ocr-status" aria-live="polite">Choose a clear, tightly cropped image.</span>
+            </div>
+          </div>
+
+          <div class="field-grid two-col label-sections">
+            <label class="field">
+              <span class="field-label">Ingredient list transcription <span class="required">OCR result — review before analysis</span></span>
+              <textarea id="ingredient-text" name="ingredientText" rows="8" placeholder="Ingredients: wheat flour, sugar, cocoa powder, milk powder, soy lecithin, salt"></textarea>
+              <span class="field-hint">OCR can misread small print. Edit this text against the image; keep the original order and parentheses.</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Contains / advisory statement <span class="optional">optional but useful</span></span>
+              <textarea id="contains-text" name="containsText" rows="8" placeholder="Contains: wheat, milk, soy. May contain peanuts."></textarea>
+              <span class="field-hint">Enter “Contains”, “May contain” or facility statements separately.</span>
+            </label>
+          </div>
+
+          <label class="field nutrition-input">
+            <span class="field-label">Nutrition panel transcription <span class="required">OCR result — review before analysis</span></span>
+            <textarea id="nutrition-text" name="nutritionText" rows="12" placeholder="Nutrition Information&#10;Serving size: 30 g&#10;Servings per container: 4&#10;Per serving&#10;Energy 135 kcal (565 kJ)&#10;Total fat 6 g 8%&#10;Saturated fat 3 g 14%&#10;Trans fat 0 g&#10;Total carbohydrate 18 g 7%&#10;Total sugars 10 g&#10;Added sugars 8 g 16%&#10;Dietary fibre 2 g 7%&#10;Protein 3 g 6%&#10;Sodium 90 mg 4%"></textarea>
+            <span class="field-hint">OCR keeps line breaks where possible. Check every row, heading, decimal, kcal/kJ unit and serving basis against the image.</span>
+          </label>
+
+          <div class="quantity-panel">
+            <div>
+              <span class="field-label">Calories for a planned quantity <span class="optional">optional</span></span>
+              <span class="field-hint">Calculated only when a matching energy basis and quantity are available.</span>
+            </div>
+            <div class="quantity-controls">
+              <input id="planned-quantity" type="number" min="0" step="any" placeholder="e.g. 60" aria-label="Planned quantity">
+              <select id="planned-unit" aria-label="Planned quantity unit"><option value="g">g</option><option value="ml">ml</option></select>
+            </div>
+          </div>
+
+          <fieldset class="check-panel">
+            <legend>Optional visual cross-check</legend>
+            <label><input id="ingredients-checked" type="checkbox"> I checked the ingredient transcription against the image</label>
+            <label><input id="nutrition-checked" type="checkbox"> I checked the nutrition transcription against the image</label>
+          </fieldset>
+
+          <div class="form-actions">
+            <p class="form-disclaimer">Select both images and analyse to run OCR automatically. You can also run either OCR button separately, edit the result, and then analyse.</p>
+            <button class="primary-button" type="submit">OCR and analyse label <span aria-hidden="true">→</span></button>
+          </div>
+          <p id="form-error" class="form-error hidden" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="results" class="results hidden" aria-labelledby="results-heading">
+        <div class="results-intro">
+          <div>
+            <div class="eyebrow">Step 02 · Report</div>
+            <h2 id="results-heading">Your label, explained</h2>
+          </div>
+          <span id="completion-badge" class="status-badge"></span>
+        </div>
+        <div id="completion-alert"></div>
+        <div id="results-content"></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>LabelLens is an evidence and education tool. It is not medical advice, a food safety guarantee or a legal compliance certification.</p>
+    </footer>
+
+    <script type="module" src="src/app.mjs"></script>
+  </body>
+</html>

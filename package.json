@@ -1,0 +1,18 @@
+{
+  "name": "labellens",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local, evidence-first ingredient and nutrition label analysis",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "start": "node tools/server.mjs"
+  },
+  "engines": {
+    "node": ">=22.22.1"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "tesseract.js": "7.0.0"
+  }
+}
