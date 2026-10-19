@@ -4,6 +4,7 @@ import { extractAllergens } from '../src/core/allergens.mjs';
 import { analyzeLabel, calculateTransparentScore } from '../src/core/analyze.mjs';
 import { parseIngredients } from '../src/core/ingredients.mjs';
 import { calculateEnergyForQuantity, parseNutrition, valueFor } from '../src/core/nutrition.mjs';
+import { compareValidatorResults, parseValidatorJson } from '../src/core/validation.mjs';
 
 const nutritionFixture = `Nutrition Information
 Serving size: 30 g
@@ -148,4 +149,48 @@ test('missing ingredients leave allergen status unknown', () => {
   assert.equal(report.allergens.status, 'unknown');
   assert.equal(report.fullLabelStatus, 'partial');
   assert.ok(report.concerns.some((concern) => /ingredient list/i.test(concern.text)));
+});
+
+test('accepts fenced validator JSON and confirms equivalent independent facts', () => {
+  const parsed = parseValidatorJson('```json\n{"facts":[{"key":"energy","value":"135","unit":"kcal","basis":"per_serving"}]}\n```');
+  const comparison = compareValidatorResults([
+    { status: 'ok', parsed },
+    { status: 'ok', parsed: { facts: [{ key: 'ENERGY', value: 135, unit: 'KCAL', basis: 'PER_SERVING' }] } },
+  ]);
+  assert.equal(comparison.status, 'agreement');
+  assert.equal(comparison.agreedFacts[0].value, '135');
+});
+
+test('treats alternate ingredient keys as agreement when ordered visible values match', () => {
+  const comparison = compareValidatorResults([
+    { status: 'ok', parsed: { facts: [{ key: 'ingredient_1', value: 'wheat flour', basis: 'visible' }] } },
+    { status: 'ok', parsed: { facts: [{ key: 'wheat flour', value: 'wheat flour', basis: 'unknown' }] } },
+  ]);
+  assert.equal(comparison.status, 'agreement');
+});
+
+test('does not choose a winner when independent validators disagree', () => {
+  const comparison = compareValidatorResults([
+    { status: 'ok', parsed: { facts: [{ key: 'energy', value: '135', unit: 'kcal', basis: 'per_serving' }] } },
+    { status: 'ok', parsed: { facts: [{ key: 'energy', value: '185', unit: 'kcal', basis: 'per_serving' }] } },
+  ]);
+  assert.equal(comparison.status, 'conflict');
+  assert.equal(comparison.agreedFacts.length, 0);
+  assert.equal(comparison.conflicts[0].validatorA.value, '135');
+});
+
+test('keeps unavailable dual validation visible without blocking OCR analysis', () => {
+  const report = analyzeLabel({
+    ingredientText: 'Ingredients: oats',
+    images: {
+      ingredients: {
+        present: true,
+        name: 'ingredients.png',
+        ocrComplete: true,
+        validation: { kind: 'ingredients', comparison: { status: 'unavailable', conflicts: ['Ollama is not running.'] } },
+      },
+    },
+  });
+  assert.equal(report.evidence.dualValidation[0].status, 'unavailable');
+  assert.ok(report.concerns.some((concern) => /dual validation was unavailable/i.test(concern.text)));
 });

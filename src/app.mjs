@@ -71,6 +71,9 @@ function renderProductCard(report) {
   const imageLabel = report.evidence.images.length
     ? report.evidence.images.map((image) => `${image.kind}: ${image.name}${image.ocrConfidence === null || image.ocrConfidence === undefined ? '' : ` (${image.ocrConfidence}% OCR)`}`).join(' · ')
     : 'Not supplied';
+  const dualLabel = report.evidence.dualValidation.length
+    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}`).join(' · ')
+    : 'Not run';
   const info = [
     ['Product', report.product.name],
     ['Serving size', serving.sizeText || 'Not declared / not readable'],
@@ -78,6 +81,7 @@ function renderProductCard(report) {
     ['Image evidence', imageLabel],
     ['Ingredients section', statusLabel(report.ingredients.status)],
     ['Nutrition section', statusLabel(report.nutrition.status)],
+    ['Dual validation', dualLabel],
     ['Interpretation profile', report.profile.jurisdiction],
     ['Analysis status', report.fullLabelStatus === 'complete' ? 'Both sections readable' : 'Do not treat as complete'],
   ];
@@ -220,6 +224,10 @@ function renderEvidenceCard(report) {
   const grid = element('div', { className: 'evidence-grid' });
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Cross-check status']), element('p', {}, [report.evidence.crossCheckMessage])]));
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Section completeness']), element('p', {}, [`Ingredients: ${statusLabel(report.evidence.sectionStatus.ingredients)} · Nutrition: ${statusLabel(report.evidence.sectionStatus.nutrition)}`])]));
+  const dualText = report.evidence.dualValidation.length
+    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.models.length ? ` (${validation.models.join(' + ')})` : ''}`).join(' · ')
+    : 'Not run. The deterministic OCR transcription remains the source for analysis.';
+  grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Independent validators']), element('p', {}, [dualText])]));
   card.append(grid);
   card.append(element('ul', { className: 'source-list' }, report.evidence.sources.map((source) => element('li', {}, [source]))));
   if (report.missingRequests.length) card.append(element('div', { className: 'alert' }, [report.missingRequests.join(' ')]));
@@ -244,6 +252,8 @@ function render(report) {
 const selectedImages = { ingredients: null, nutrition: null };
 const ocrComplete = { ingredients: false, nutrition: false };
 const ocrConfidence = { ingredients: null, nutrition: null };
+const validationComplete = { ingredients: false, nutrition: false };
+const validationResults = { ingredients: null, nutrition: null };
 const imageRefs = {
   ingredients: {
     input: $('#ingredients-image'),
@@ -277,6 +287,8 @@ function setSelectedImage(kind, file) {
   selectedImages[kind] = file || null;
   ocrComplete[kind] = false;
   ocrConfidence[kind] = null;
+  validationComplete[kind] = false;
+  validationResults[kind] = null;
   const refs = imageRefs[kind];
   refs.button.disabled = !file;
   if (!file) {
@@ -310,6 +322,8 @@ async function runOcr(kind) {
     refs.text.value = payload.text || '';
     ocrComplete[kind] = Boolean(payload.text);
     ocrConfidence[kind] = payload.confidence;
+    validationComplete[kind] = false;
+    validationResults[kind] = null;
     if (payload.text) {
       const confidence = payload.confidence === null ? 'confidence unavailable' : `${payload.confidence}% confidence estimate`;
       setOcrStatus(kind, `OCR complete · ${confidence}. Review the transcription against the image.`, 'success');
@@ -325,9 +339,50 @@ async function runOcr(kind) {
   }
 }
 
+async function runDualValidation(kind) {
+  const file = selectedImages[kind];
+  const ocrText = imageRefs[kind].text.value.trim();
+  if (!file || !ocrText || validationComplete[kind]) return validationResults[kind];
+  const refs = imageRefs[kind];
+  refs.button.disabled = true;
+  setOcrStatus(kind, 'OCR complete. Running two local validators sequentially…', 'busy');
+  try {
+    const formData = new FormData();
+    formData.append('image', file, file.name);
+    formData.append('kind', kind);
+    formData.append('ocrText', ocrText);
+    const response = await fetch('/api/dual-validate', { method: 'POST', body: formData });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Dual validation failed.');
+    validationResults[kind] = payload;
+    validationComplete[kind] = true;
+    if (payload.comparison.status === 'agreement') {
+      setOcrStatus(kind, `OCR + two validators agree. Review the image before relying on the result.`, 'success');
+    } else {
+      setOcrStatus(kind, 'The two validators disagree. Review the highlighted uncertainty in the report.', 'error');
+    }
+    return payload;
+  } catch (error) {
+    validationResults[kind] = {
+      kind,
+      models: [],
+      validators: [],
+      comparison: { status: 'unavailable', conflicts: [error.message] },
+    };
+    setOcrStatus(kind, `Dual validation unavailable: ${error.message} OCR remains available.`, 'error');
+    return validationResults[kind];
+  } finally {
+    refs.button.disabled = false;
+  }
+}
+
 for (const [kind, refs] of Object.entries(imageRefs)) {
   refs.input.addEventListener('change', (event) => setSelectedImage(kind, event.target.files?.[0] || null));
   refs.button.addEventListener('click', () => runOcr(kind));
+  refs.text.addEventListener('input', () => {
+    validationComplete[kind] = false;
+    validationResults[kind] = null;
+  });
 }
 
 $('#analysis-form').addEventListener('submit', async (event) => {
@@ -344,6 +399,7 @@ $('#analysis-form').addEventListener('submit', async (event) => {
   submitButton.textContent = 'Running OCR…';
   for (const kind of ['ingredients', 'nutrition']) {
     if (selectedImages[kind] && !ocrComplete[kind]) await runOcr(kind);
+    if (selectedImages[kind] && imageRefs[kind].text.value.trim()) await runDualValidation(kind);
   }
   const ingredientText = $('#ingredient-text').value;
   const containsText = $('#contains-text').value;
@@ -356,8 +412,8 @@ $('#analysis-form').addEventListener('submit', async (event) => {
     plannedQuantity: $('#planned-quantity').value,
     plannedUnit: $('#planned-unit').value,
     images: {
-      ingredients: selectedImages.ingredients ? { present: true, name: selectedImages.ingredients.name, type: selectedImages.ingredients.type, size: selectedImages.ingredients.size, ocrComplete: ocrComplete.ingredients, ocrConfidence: ocrConfidence.ingredients } : { present: false },
-      nutrition: selectedImages.nutrition ? { present: true, name: selectedImages.nutrition.name, type: selectedImages.nutrition.type, size: selectedImages.nutrition.size, ocrComplete: ocrComplete.nutrition, ocrConfidence: ocrConfidence.nutrition } : { present: false },
+      ingredients: selectedImages.ingredients ? { present: true, name: selectedImages.ingredients.name, type: selectedImages.ingredients.type, size: selectedImages.ingredients.size, ocrComplete: ocrComplete.ingredients, ocrConfidence: ocrConfidence.ingredients, validation: validationResults.ingredients } : { present: false },
+      nutrition: selectedImages.nutrition ? { present: true, name: selectedImages.nutrition.name, type: selectedImages.nutrition.type, size: selectedImages.nutrition.size, ocrComplete: ocrComplete.nutrition, ocrConfidence: ocrConfidence.nutrition, validation: validationResults.nutrition } : { present: false },
     },
     imageChecks: { ingredientsChecked: $('#ingredients-checked').checked, nutritionChecked: $('#nutrition-checked').checked },
   }));

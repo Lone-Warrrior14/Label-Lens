@@ -124,6 +124,12 @@ function buildEvidence({ images, imageChecks, ingredients, nutrition }) {
       ingredients: ingredients.status,
       nutrition: nutrition.status,
     },
+    dualValidation: imageList.map((image) => ({
+      kind: image.kind,
+      status: image.validation?.comparison?.status || 'not_run',
+      models: image.validation?.models || [],
+      conflicts: image.validation?.comparison?.conflicts || [],
+    })),
   };
 }
 
@@ -135,6 +141,18 @@ export function analyzeLabel(input = {}) {
   const investigationFlags = findInvestigationFlags(claimText);
   const score = calculateTransparentScore(nutrition);
   const ingredientCount = flattenIngredients(ingredients.items).length;
+  const validationResults = Object.values(input.images || {})
+    .map((image) => image?.validation)
+    .filter(Boolean);
+  const validationConflicts = validationResults.flatMap((validation) => {
+    if (validation.comparison?.status === 'conflict') {
+      return [`Independent validators disagreed for the ${validation.kind || 'label'} section. Review the original image before relying on conflicting values.`];
+    }
+    if (validation.comparison?.status === 'unavailable') {
+      return [`Independent dual validation was unavailable for the ${validation.kind || 'label'} section. The OCR transcription remains unconfirmed.`];
+    }
+    return [];
+  });
   const missingRequests = [];
   if (ingredients.status !== 'present') missingRequests.push(sectionRequest('Ingredient list', input.images?.ingredients?.present || input.image?.present));
   if (nutrition.status !== 'present') missingRequests.push(sectionRequest('Nutrition panel', input.images?.nutrition?.present || input.image?.present));
@@ -144,6 +162,7 @@ export function analyzeLabel(input = {}) {
   const concerns = [
     ...ingredients.warnings.map((warning) => ({ severity: 'uncertain', text: warning })),
     ...nutrition.warnings.map((warning) => ({ severity: 'uncertain', text: warning })),
+    ...validationConflicts.map((text) => ({ severity: 'uncertain', text })),
     ...allergens.findings.filter((finding) => finding.status === 'precautionary').map((finding) => ({ severity: 'investigate', text: `${finding.allergen}: ${finding.explanation}` })),
     ...investigationFlags.map((flag) => ({ severity: 'investigate', text: `“${flag.text}”: ${flag.reason}` })),
   ];

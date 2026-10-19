@@ -4,10 +4,14 @@ import { mkdir } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tesseract from 'tesseract.js';
+import { compareValidatorResults, parseValidatorJson } from '../src/core/validation.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]+$/, '');
 const port = Number(process.env.PORT || 4173);
 const maxUploadBytes = 15 * 1024 * 1024;
+const ollamaUrl = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+const requestedValidatorA = process.env.OLLAMA_VALIDATOR_A || 'gemma3:latest';
+const requestedValidatorB = process.env.OLLAMA_VALIDATOR_B || 'qwen3-vl:4b';
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -139,9 +143,107 @@ async function handleOcr(request, response) {
   }
 }
 
+async function availableVisionModels() {
+  const response = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error(`Ollama returned HTTP ${response.status} while listing models.`);
+  const payload = await response.json();
+  return (payload.models || [])
+    .filter((model) => (model.capabilities || model.details?.capabilities || []).includes('vision'))
+    .map((model) => model.name);
+}
+
+function chooseValidatorModels(available) {
+  const fallbackOrder = ['qwen3-vl:4b', 'qwen2.5vl:7b', 'gemma3:latest'];
+  const first = available.includes(requestedValidatorA) ? requestedValidatorA : available[0];
+  const secondCandidates = [requestedValidatorB, ...fallbackOrder];
+  const second = secondCandidates.find((candidate) => candidate !== first && available.includes(candidate));
+  if (!first || !second) {
+    throw new Error(`Dual validation needs two installed vision models. Available: ${available.join(', ') || 'none'}. Configure OLLAMA_VALIDATOR_A/B or install another vision model.`);
+  }
+  return [first, second];
+}
+
+function validatorPrompt(kind, ocrText) {
+  const sectionInstructions = kind === 'nutrition'
+    ? 'Extract every visible nutrition value. Keep kcal and kJ separate, preserve units, and label each value as per serving, per 100 g, per 100 ml, per container, or unknown. Do not infer missing values.'
+    : 'Extract every visible ingredient in original order. Preserve parenthetical compound ingredients and any explicitly printed percentages. Do not infer percentages from order.';
+  return `You are one independent validator in a food-label extraction system. The image is primary evidence; OCR is only an aid. ${sectionInstructions}
+
+Return JSON only with this exact shape:
+{
+  "section_status": "present" | "partial" | "unreadable",
+  "facts": [
+    {"key": "stable field key or ingredient_1", "value": "exact visible value", "unit": "visible unit or empty", "basis": "visible basis or unknown", "evidence": "short exact text from image"}
+  ],
+  "warnings": ["only visible uncertainty or conflict"]
+}
+
+Rules: never invent, never fill a blank with zero, never calculate an ingredient percentage from order, and use needs-review warnings for blurry or conflicting text. The OCR transcription follows for comparison:
+---
+${String(ocrText || '').slice(0, 50000)}
+---`;
+}
+
+async function callOllamaValidator(model, image, kind, ocrText) {
+  const response = await fetch(`${ollamaUrl}/api/chat`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(180000),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      keep_alive: 0,
+      options: { temperature: 0, num_ctx: 8192, num_predict: 2048 },
+      messages: [
+        { role: 'system', content: 'You are a conservative, evidence-first food-label validator. Do not reveal reasoning; return only the requested JSON.' },
+        { role: 'user', content: validatorPrompt(kind, ocrText), images: [image.toString('base64')] },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`${model} returned HTTP ${response.status}.`);
+  const payload = await response.json();
+  const raw = payload.message?.content || '';
+  try {
+    return { model, status: 'ok', parsed: parseValidatorJson(raw), raw };
+  } catch (error) {
+    return { model, status: 'invalid', parsed: null, raw, error: error.message };
+  }
+}
+
+async function handleDualValidation(request, response) {
+  try {
+    const contentType = request.headers['content-type'] || '';
+    if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
+      json(response, 415, { error: 'Send the image and OCR text as multipart/form-data.' });
+      return;
+    }
+    const body = await readBody(request);
+    const parts = parseMultipart(body, contentType);
+    const image = parts.find((part) => part.name === 'image');
+    const kind = parts.find((part) => part.name === 'kind')?.data.toString('utf8').trim() || 'label';
+    const ocrText = parts.find((part) => part.name === 'ocrText')?.data.toString('utf8') || '';
+    if (!image?.data.length || !ocrText.trim()) {
+      json(response, 400, { error: 'An image and non-empty OCR text are required for dual validation.' });
+      return;
+    }
+    const models = chooseValidatorModels(await availableVisionModels());
+    // Deliberately sequential: only one vision model is loaded at a time on a small GPU.
+    const results = [];
+    for (const model of models) results.push(await callOllamaValidator(model, image.data, kind, ocrText));
+    json(response, 200, { kind, models, validators: results, comparison: compareValidatorResults(results), engine: 'local Ollama sequential dual validation' });
+  } catch (error) {
+    console.error('Dual validation failed:', error);
+    json(response, 503, { error: `Dual validation unavailable: ${error.message}` });
+  }
+}
+
 const server = createServer(async (request, response) => {
   if (request.method === 'POST' && request.url?.split('?')[0] === '/api/ocr') {
     await handleOcr(request, response);
+    return;
+  }
+  if (request.method === 'POST' && request.url?.split('?')[0] === '/api/dual-validate') {
+    await handleDualValidation(request, response);
     return;
   }
   if (request.method !== 'GET' && request.method !== 'HEAD') {

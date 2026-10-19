@@ -41,6 +41,34 @@ Open <http://localhost:4173>. The server binds to `0.0.0.0`; set `PORT` to use a
 PORT=4174 npm start
 ```
 
+## Optional local dual validation
+
+LabelLens can use local Ollama as a second, independent image validator after Tesseract OCR. The two vision models are called **sequentially**, never concurrently, so one small GPU does not need to hold both models at once. Each request uses `keep_alive: 0` so Ollama can unload the model between validators.
+
+The defaults are:
+
+```text
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_VALIDATOR_A=gemma3:latest
+OLLAMA_VALIDATOR_B=qwen3-vl:4b
+```
+
+If the configured second model is not installed, the server falls back to another installed vision model such as `qwen2.5vl:7b`. Install a recommended second validator with:
+
+```bash
+ollama pull qwen3-vl:4b
+```
+
+Or choose the models for one run:
+
+```bash
+OLLAMA_VALIDATOR_A=gemma3:latest \
+OLLAMA_VALIDATOR_B=qwen2.5vl:7b \
+npm start
+```
+
+The validators receive the image and OCR transcription independently. Agreement is reported as confirmation. A contradiction is shown as a conflict and does not silently overwrite the OCR text or deterministic nutrition scoring. If Ollama is unavailable, the application continues with local OCR and clearly reports that dual validation was not run.
+
 In the form:
 
 1. Upload a clear, tightly cropped image containing the ingredient list.
