@@ -66,6 +66,7 @@ It runs `npm test`, which uses only `node --test` and has no network dependency.
 ## Docker
 
 ```bash
+docker build -t labellens .
 docker run --rm -p 4173:4173 labellens
 ```
 
