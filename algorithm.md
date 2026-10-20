@@ -76,6 +76,7 @@ For fibre and protein, the positive target is 20% RDA. For sodium, saturated fat
 
 The prominent A–D card starts with the nutrition signal, then applies visible ingredient and priority-flag adjustments:
 
+- Oil in the first two ingredients: −5, with a visible “oil is high in the ingredient list” highlight. This flags prominence in the ordered list; it does not infer an exact oil percentage.
 - Sweetener in the first three ingredients: −8
 - Refined flour in the first three ingredients: −5
 - Multiple sweetening ingredients: −4

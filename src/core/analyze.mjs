@@ -16,6 +16,7 @@ const SWEETENER_ALIASES = ['sugar', 'sucrose', 'glucose syrup', 'corn syrup', 'i
 const REFINED_GRAIN_ALIASES = ['maida', 'refined wheat flour', 'refined flour', 'white flour'];
 const WHOLE_GRAIN_ALIASES = ['whole wheat', 'wholegrain', 'whole grain', 'oats', 'oat flour', 'brown rice', 'millet', 'ragi'];
 const PALM_FAT_ALIASES = ['palm oil', 'palmolein', 'palm fat'];
+const OIL_ALIASES = ['vegetable oil', 'sunflower oil', 'palm oil', 'palmolein', 'canola oil', 'rapeseed oil', 'oil'];
 
 function includesAlias(text, aliases) {
   const normalized = String(text || '').toLocaleLowerCase('en-IN');
@@ -32,6 +33,7 @@ function gradeForScore(score) {
 function buildRatingReasons(ingredients, nutrition, score) {
   const reasons = [];
   const topLevel = ingredients.items || [];
+  const topTwoText = topLevel.slice(0, 2).map((item) => item.name).join(', ');
   const topThreeText = topLevel.slice(0, 3).map((item) => item.name).join(', ');
   const allIngredientText = flattenIngredients(topLevel).map((item) => item.name).join(', ');
   let ingredientPenalty = 0;
@@ -49,6 +51,13 @@ function buildRatingReasons(ingredients, nutrition, score) {
     const palmPenalty = includesAlias(topThreeText, PALM_FAT_ALIASES) ? 6 : 3;
     ingredientPenalty += palmPenalty;
     reasons.push({ severity: 'concern', title: `Palm-derived fat is declared (-${palmPenalty} points)`, detail: `“${palmFat}” is visible in the ingredient list${palmPenalty === 6 ? ' and appears among the first three ingredients' : ''}. Palm oil is not the same as hydrogenated oil, so it receives a moderate, not maximum, adjustment; the nutrition panel’s saturated fat remains important.`, evidence: allIngredientText });
+  }
+
+  const topOil = includesAlias(topTwoText, OIL_ALIASES);
+  if (topOil) {
+    const oilPenalty = 5;
+    ingredientPenalty += oilPenalty;
+    reasons.push({ severity: 'concern', title: `Oil is high in the ingredient list (-${oilPenalty} points)`, detail: `“${topOil}” appears within the first two listed ingredients. This highlights a prominent oil ingredient without inferring an exact percentage; total fat and saturated fat still come from the nutrition panel.`, evidence: topTwoText });
   }
 
   const topSweetener = includesAlias(topThreeText, SWEETENER_ALIASES);

@@ -331,6 +331,16 @@ test('creates an A-D rating with visible nutrition and ingredient reasons', () =
   assert.ok(report.rating.nutritionPenalty >= 11);
 });
 
+test('highlights oil when it appears in the first two ingredients', () => {
+  const report = analyzeLabel({
+    ingredientText: 'Ingredients: water, refined sunflower oil, sugar, thickeners',
+    nutritionText: 'Nutrition Information\nServing size: 15 g\nPer serving\nEnergy 42 kcal\nTotal carbohydrate 2 g\nTotal sugars 1 g\nAdded sugars 1 g 2%\nTotal fat 4 g 6%\nSaturated fat 1 g 5%\nTrans fat 0 g\nProtein 0 g\nSodium 100 mg 5%',
+  });
+  assert.ok(report.rating.reasons.some((reason) => /oil is high in the ingredient list/i.test(reason.title)));
+  assert.ok(report.rating.reasons.some((reason) => /first two/i.test(reason.detail)));
+  assert.ok(report.rating.ingredientPenalty >= 5);
+});
+
 test('hydrogenated oils materially lower the ingredient-adjusted rating', () => {
   const nutritionText = 'Serving size: 30 g\nPer serving\nEnergy 100 kcal\nTotal fat 4 g 6%\nSaturated fat 1 g 5%\nTrans fat 0 g\nAdded sugars 2 g 4%\nDietary fibre 3 g 11%\nProtein 4 g 8%\nSodium 80 mg 3%';
   const base = analyzeLabel({ ingredientText: 'Ingredients: oats, cocoa powder', nutritionText });
