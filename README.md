@@ -105,6 +105,13 @@ docker run --rm -p 4173:4173 labellens
 
 Then open <http://localhost:4173>. The first OCR request may take longer while the local worker and English model initialize. Ollama is not installed inside this image; configure `OLLAMA_URL` to a reachable Ollama service if local LLM processing is needed from Docker.
 
+The buildathon-style offline container check is:
+
+```bash
+docker build -t labellens .
+docker run --rm --network none labellens npm test
+```
+
 ## Report interpretation
 
 The report currently contains these sections:
