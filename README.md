@@ -46,6 +46,10 @@ Open <http://localhost:4173>. The server binds to `0.0.0.0`; set `PORT` to use a
 PORT=4174 npm start
 ```
 
+## Live demo
+
+There is no hosted deployment currently. The local demo is available at <http://localhost:4173> after `npm start` (or at the port selected with `PORT`).
+
 ## Optional local LLM processing
 
 LabelLens can use one local Ollama vision model after Tesseract OCR. A single model is selected and kept warm for five minutes so ingredient and nutrition images can be processed without loading two models or repeating the model startup for every section.
