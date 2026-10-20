@@ -4,7 +4,8 @@ import { extractAllergens } from '../src/core/allergens.mjs';
 import { analyzeLabel, calculateTransparentScore } from '../src/core/analyze.mjs';
 import { parseIngredients } from '../src/core/ingredients.mjs';
 import { calculateEnergyForQuantity, parseNutrition, valueFor } from '../src/core/nutrition.mjs';
-import { compareValidatorResults, parseValidatorJson } from '../src/core/validation.mjs';
+import { correctionStatus, normalizeValidatorPayload, nutritionTextFromValidatorPayload, parseValidatorJson } from '../src/core/validation.mjs';
+import { nextTheme, resolveTheme } from '../src/core/theme.mjs';
 
 const nutritionFixture = `Nutrition Information
 Serving size: 30 g
@@ -60,6 +61,8 @@ test('parses serving basis, kcal, kJ, sugars, fats and other declared nutrients'
   assert.equal(valueFor(result, 'added_sugars', 'per_serving').declaredDv, 16);
   assert.equal(valueFor(result, 'sodium', 'per_serving').unit, 'mg');
   assert.equal(valueFor(result, 'energy', 'per_100g', 'kcal').amount, 450);
+  assert.equal(result.optionalMissing.includes('dietary_fibre'), false);
+  assert.equal(result.optionalMissing.includes('salt'), false);
 });
 
 test('does not treat missing nutrition values as zero and calculates only with a matching basis', () => {
@@ -151,49 +154,145 @@ test('missing ingredients leave allergen status unknown', () => {
   assert.ok(report.concerns.some((concern) => /ingredient list/i.test(concern.text)));
 });
 
-test('accepts fenced validator JSON and confirms equivalent independent facts', () => {
-  const parsed = parseValidatorJson('```json\n{"corrected_text":"Energy 135 kcal","facts":[{"key":"energy","value":"135","unit":"kcal","basis":"per_serving"}]}\n```');
-  const comparison = compareValidatorResults([
-    { status: 'ok', parsed },
-    { status: 'ok', parsed: { corrected_text: 'Energy 135 kcal', facts: [{ key: 'ENERGY', value: 135, unit: 'KCAL', basis: 'PER_SERVING' }] } },
-  ]);
-  assert.equal(comparison.status, 'agreement');
-  assert.equal(comparison.agreedFacts[0].value, '135');
-  assert.equal(comparison.correctionStatus, 'confirmed_correction');
-  assert.equal(comparison.consensusText, 'Energy 135 kcal');
+test('accepts fenced single-model validator JSON and classifies corrections', () => {
+  const parsed = parseValidatorJson('```json\n{"section_header":"Nutrition Information","headers":[{"name":"Serving size","value":"30 g","type":"serving"}],"corrected_text":"Energy 135 kcal","facts":[{"key":"energy","value":"135","unit":"kcal","basis":"per_serving"}]}\n```');
+  assert.equal(parsed.facts[0].value, '135');
+  assert.equal(parsed.section_header, 'Nutrition Information');
+  assert.equal(parsed.headers[0].name, 'Serving size');
+  assert.equal(correctionStatus(parsed.corrected_text, 'Energy 135 kcal'), 'no_change');
 });
 
-test('treats alternate ingredient keys as agreement when ordered visible values match', () => {
-  const comparison = compareValidatorResults([
-    { status: 'ok', parsed: { facts: [{ key: 'ingredient_1', value: 'wheat flour', basis: 'visible' }] } },
-    { status: 'ok', parsed: { facts: [{ key: 'wheat flour', value: 'wheat flour', basis: 'unknown' }] } },
-  ]);
-  assert.equal(comparison.status, 'agreement');
+test('converts structured nutrition columns into parser-readable basis rows', () => {
+  const text = nutritionTextFromValidatorPayload({
+    section_header: 'Nutrition Information',
+    facts: [
+      { key: 'Energy (kcal)', values: [
+        { amount: '283.1', unit: 'kcal', basis: 'Per 100g', percent_rda: '', evidence: '283.1' },
+        { amount: '42.46', unit: 'kcal', basis: 'Per serve 15g', percent_rda: '', evidence: '42.46' },
+        { amount: '', unit: '%', basis: '% RDA/serve', percent_rda: '2.1', evidence: '2.1' },
+      ] },
+      { key: 'Sodium (mg)', values: [
+        { amount: '683.8', unit: 'mg', basis: 'Per 100g', percent_rda: '', evidence: '683.8' },
+        { amount: '102.6', unit: 'mg', basis: 'Per serve 15g', percent_rda: '5.1', evidence: '102.6 5.1' },
+      ] },
+    ],
+  }, 'Energy (kcal) | 2831 | 4246 | 21 |\nSodium (mg) | 6838 | 1026 | 51 |');
+  assert.match(text, /Per 100 g/);
+  assert.match(text, /Energy \(kcal\): 283\.1 kcal/);
+  assert.match(text, /Per serving/);
+  assert.match(text, /Sodium \(mg\): 102\.6 mg 5\.1%/);
 });
 
-test('uses matching corrected transcriptions when validator JSON formatting differs', () => {
-  const correctedText = 'Nutrition Information\nEnergy 135 kcal (565 kJ)';
-  const comparison = compareValidatorResults([
-    { status: 'ok', parsed: { corrected_text: correctedText, facts: [{ key: 'stable field key or energy', value: '135', unit: 'kcal', basis: 'per serving' }] } },
-    { status: 'ok', parsed: { corrected_text: correctedText, facts: [{ key: 'Energy', value: '135', unit: 'kcal (565 kJ)', basis: 'per serving' }] } },
-  ], { kind: 'nutrition', ocrText: 'Energy 135 kcal (565 kJ)' });
-  assert.equal(comparison.status, 'agreement');
-  assert.equal(comparison.correctionStatus, 'confirmed_correction');
-  assert.equal(comparison.consensusText, correctedText);
-  assert.equal(comparison.factConflicts.length, 1);
+test('reconstructs the supplied multi-column nutrition table for deterministic parsing', () => {
+  const facts = [
+    ['Energy', '283.1', 'kcal', '21'],
+    ['Protein', '0.4', 'g', '0.1'],
+    ['Carbohydrate', '13.8', 'g', ''],
+    ['Total Sugars', '8.5', 'g', ''],
+    ['Added Sugars', '8.5', 'g', '2.6'],
+    ['Total Fat', '25.1', 'g', '5.63'],
+    ['Saturated Fat', '2.3', 'g', '1.6'],
+    ['Trans Fat', '0.5', 'g', '3.75'],
+    ['Cholesterol', '0.3', 'mg', ''],
+    ['Sodium', '683.8', 'mg', '5.1'],
+  ].map(([key, amount, unit, percent_rda]) => ({
+    key,
+    value: amount,
+    unit,
+    basis: 'Per 100g',
+    values: [{ amount, unit, basis: 'Per 100g', percent_rda, evidence: amount }],
+    evidence: amount,
+  }));
+  const ocr = `Energy | 2831 | 4246 | 21 |
+Protein | 04 | 006 | 01 |
+Carbohydrate | 138 | 207 | |
+Total Sugars | 85 | 128 | |
+Added Sugars | 85 | 128 | 26 |
+Total Fat | 251 | 377 | 563 |
+Saturated Fat | 23 | 034 | 16 |
+Trans Fat | 05 | 008 | 375 |
+Cholesterol | 03 | 005 | |
+Sodium | 6838 | 1026 | 51 |`;
+  const text = nutritionTextFromValidatorPayload({ section_header: 'Nutrition Information', headers: [{ name: 'Per serve 15g', value: 'Per serve 15g', type: 'column' }], facts }, ocr);
+  const parsed = parseNutrition(text);
+  assert.equal(parsed.status, 'present');
+  assert.equal(parsed.values.find((value) => value.nutrient === 'energy' && value.basis === 'per_100g')?.amount, 283.1);
+  assert.equal(parsed.values.find((value) => value.nutrient === 'energy' && value.basis === 'per_serving')?.amount, 42.46);
+  assert.equal(parsed.values.find((value) => value.nutrient === 'saturated_fat' && value.basis === 'per_100g')?.amount, 2.3);
+  assert.equal(parsed.values.find((value) => value.nutrient === 'sodium' && value.basis === 'per_serving')?.amount, 102.6);
 });
 
-test('does not choose a winner when independent validators disagree', () => {
-  const comparison = compareValidatorResults([
-    { status: 'ok', parsed: { facts: [{ key: 'energy', value: '135', unit: 'kcal', basis: 'per_serving' }] } },
-    { status: 'ok', parsed: { facts: [{ key: 'energy', value: '185', unit: 'kcal', basis: 'per_serving' }] } },
-  ]);
-  assert.equal(comparison.status, 'conflict');
-  assert.equal(comparison.agreedFacts.length, 0);
-  assert.equal(comparison.conflicts[0].validatorA.value, '135');
+test('retains a nutrition row when OCR drops it but the vision model reads it', () => {
+  const text = nutritionTextFromValidatorPayload({
+    section_header: 'Nutrition Information',
+    headers: [{ name: 'Per serve 15g', value: 'Per serve 15g', type: 'column' }],
+    facts: [{
+      key: 'Saturated Fat',
+      value: '2.3',
+      unit: 'g',
+      basis: 'Per 100g',
+      values: [{ amount: '2.3', unit: 'g', basis: 'Per 100g', percent_rda: '1.6', evidence: '2.3' }],
+    }],
+  }, 'Energy | 2831 | 4246 | 21 |');
+  assert.match(text, /Saturated Fat \(g\): 2\.3 g/);
 });
 
-test('keeps unavailable dual validation visible without blocking OCR analysis', () => {
+test('retains optional Indian fibre and salt rows when the vision model reads them', () => {
+  const text = nutritionTextFromValidatorPayload({
+    section_header: 'Nutrition Information',
+    headers: [{ name: 'Per serve 15g', value: 'Per serve 15g', type: 'column' }],
+    facts: [
+      {
+        key: 'Dietary Fibre',
+        value: '4',
+        unit: 'g',
+        basis: 'Per 100g',
+        values: [
+          { amount: '4', unit: 'g', basis: 'Per 100g', percent_rda: '', evidence: '4' },
+          { amount: '0.6', unit: 'g', basis: 'Per serve 15g', percent_rda: '2', evidence: '0.6 2' },
+        ],
+      },
+      {
+        key: 'Salt',
+        value: '1.2',
+        unit: 'g',
+        basis: 'Per 100g',
+        values: [{ amount: '0.18', unit: 'g', basis: 'Per serve 15g', percent_rda: '', evidence: '0.18' }],
+      },
+    ],
+  }, 'Dietary Fibre | 4 | 06 | 2 |\nSalt | 12 | 018 | |');
+  assert.match(text, /Dietary Fibre \(g\): 4 g/);
+  assert.match(text, /Dietary Fibre \(g\): 0\.6 g 2%/);
+  assert.match(text, /Salt \(g\): 1\.2 g/);
+  const parsed = parseNutrition(text);
+  assert.equal(parsed.optionalMissing.includes('dietary_fibre'), false);
+  assert.equal(parsed.optionalMissing.includes('salt'), false);
+});
+
+test('normalizes validator output into the stable JSON contract', () => {
+  const normalized = normalizeValidatorPayload({
+    section_status: 'unknown',
+    section_header: 42,
+    headers: [{ name: 'Serving size', value: 30, type: 'bad-type', evidence: null }, { value: 'Per serving' }],
+    corrected_text: null,
+    facts: [{ key: 'energy', value: 135, unit: 'kcal', basis: null, evidence: 'Energy' }],
+    warnings: ['check image', 7],
+    ignored: 'not returned',
+  });
+  assert.deepEqual(normalized, {
+    section_status: 'partial',
+    section_header: '42',
+    headers: [
+      { name: 'Serving size', value: '30', type: 'other', evidence: '' },
+      { name: '', value: 'Per serving', type: 'other', evidence: '' },
+    ],
+    corrected_text: '',
+    facts: [{ key: 'energy', value: '135', unit: 'kcal', basis: 'unknown', values: [], evidence: 'Energy' }],
+    warnings: ['check image', '7'],
+  });
+});
+
+test('keeps unavailable LLM processing visible without blocking OCR analysis', () => {
   const report = analyzeLabel({
     ingredientText: 'Ingredients: oats',
     images: {
@@ -205,6 +304,105 @@ test('keeps unavailable dual validation visible without blocking OCR analysis', 
       },
     },
   });
-  assert.equal(report.evidence.dualValidation[0].status, 'unavailable');
-  assert.ok(report.concerns.some((concern) => /dual validation was unavailable/i.test(concern.text)));
+  assert.equal(report.evidence.llmValidation[0].status, 'unavailable');
+  assert.ok(report.concerns.some((concern) => /LLM processing was unavailable/i.test(concern.text)));
+});
+
+test('resolves and toggles the persisted theme without browser dependencies', () => {
+  assert.equal(resolveTheme('dark', false), 'dark');
+  assert.equal(resolveTheme('light', true), 'light');
+  assert.equal(resolveTheme(null, true), 'dark');
+  assert.equal(resolveTheme('unexpected', false), 'light');
+  assert.equal(nextTheme('light'), 'dark');
+  assert.equal(nextTheme('dark'), 'light');
+});
+
+test('creates an A-D rating with visible nutrition and ingredient reasons', () => {
+  const report = analyzeLabel({
+    ingredientText: 'Ingredients: sugar, maida, palm oil, cocoa powder',
+    nutritionText: 'Nutrition Information\nServing size: 30 g\nPer serving\nEnergy 180 kcal\nTotal fat 10 g 15%\nSaturated fat 6 g 27%\nTrans fat 0 g\nTotal carbohydrate 20 g 8%\nTotal sugars 14 g\nAdded sugars 12 g 24%\nDietary fibre 1 g 4%\nProtein 2 g 4%\nSodium 520 mg 23%\nSalt 1.3 g',
+  });
+  assert.match(report.rating.grade, /^[A-D]$/);
+  assert.notEqual(report.rating.status, 'not_rated');
+  assert.ok(report.rating.reasons.some((reason) => /sugar/i.test(reason.title)));
+  assert.ok(report.rating.reasons.some((reason) => /sodium|saturated fat/i.test(reason.title)));
+  assert.ok(report.rating.reasons.some((reason) => /palm-derived/i.test(reason.title)));
+  assert.ok(report.rating.ingredientPenalty > 0);
+  assert.ok(report.rating.nutritionPenalty >= 11);
+});
+
+test('hydrogenated oils materially lower the ingredient-adjusted rating', () => {
+  const nutritionText = 'Serving size: 30 g\nPer serving\nEnergy 100 kcal\nTotal fat 4 g 6%\nSaturated fat 1 g 5%\nTrans fat 0 g\nAdded sugars 2 g 4%\nDietary fibre 3 g 11%\nProtein 4 g 8%\nSodium 80 mg 3%';
+  const base = analyzeLabel({ ingredientText: 'Ingredients: oats, cocoa powder', nutritionText });
+  const hydrogenated = analyzeLabel({ ingredientText: 'Ingredients: oats, hydrogenated vegetable oil, cocoa powder', nutritionText });
+  assert.ok(hydrogenated.rating.ingredientPenalty >= base.rating.ingredientPenalty + 15);
+  assert.ok(hydrogenated.rating.scoreLow < base.rating.scoreLow);
+  assert.ok(hydrogenated.rating.reasons.some((reason) => /hydrogenated/i.test(reason.title)));
+});
+
+test('withholds the A-D grade when a required label section is missing', () => {
+  const report = analyzeLabel({
+    ingredientText: 'Ingredients: oats, sugar',
+  });
+  assert.equal(report.rating.status, 'not_rated');
+  assert.equal(report.rating.grade, null);
+  assert.match(report.rating.notice, /both sections/i);
+});
+
+test('keeps LLM-extracted nutrition headers in the evidence report', () => {
+  const report = analyzeLabel({
+    ingredientText: 'Ingredients: oats',
+    nutritionText: 'Serving size: 30 g\nPer serving\nEnergy 100 kcal\nSodium 40 mg 2%',
+    images: {
+      nutrition: {
+        present: true,
+        name: 'nutrition.png',
+        validation: {
+          model: 'gemma3:latest',
+          parsed: {
+            section_header: 'Nutrition Information',
+            headers: [{ name: 'Serving size', value: '30 g', type: 'serving' }],
+          },
+          comparison: { status: 'single_model', correctionStatus: 'no_change', consensusText: null, conflicts: [] },
+        },
+      },
+    },
+  });
+  assert.equal(report.evidence.llmValidation[0].sectionHeader, 'Nutrition Information');
+  assert.equal(report.evidence.llmValidation[0].headers[0].name, 'Serving size');
+});
+
+test('parses the supplied ingredient-label transcription with compound INS additives and allergens', () => {
+  const text = 'Ingredients: Water, Refined Sunflower Oil, Sugar, Thickeners (INS 1442 & INS 415), Iodized Salt, Milk Solids, Acidity Regulators (INS 260, INS 270 & INS 330), Mustard Powder, Lemon Juice, Preservatives (INS 202 & INS 211), Antioxidant (INS 386), Natural Flavouring Substances.';
+  const result = parseIngredients(text);
+  assert.equal(result.status, 'present');
+  assert.deepEqual(result.items.map((item) => item.name), [
+    'Water',
+    'Refined Sunflower Oil',
+    'Sugar',
+    'Thickeners',
+    'Iodized Salt',
+    'Milk Solids',
+    'Acidity Regulators',
+    'Mustard Powder',
+    'Lemon Juice',
+    'Preservatives',
+    'Antioxidant',
+    'Natural Flavouring Substances',
+  ]);
+  assert.deepEqual(result.items[3].children.map((item) => item.name), ['INS 1442 & INS 415']);
+  const allergens = extractAllergens(result).findings.map((finding) => finding.allergen);
+  assert.ok(allergens.includes('milk'));
+  assert.ok(allergens.includes('mustard'));
+});
+
+test('treats both supplied readable fixture sections as a complete label even when optional rows are absent', () => {
+  const ingredients = 'Ingredients: Water, Refined Sunflower Oil, Sugar, Thickeners (INS 1442 & INS 415), Iodized Salt, Milk Solids, Acidity Regulators (INS 260, INS 270 & INS 330), Mustard Powder, Lemon Juice, Preservatives (INS 202 & INS 211), Antioxidant (INS 386), Natural Flavouring Substances.';
+  const nutrition = 'Nutritional Facts\nServing size: 15 g\nPer 100 g\nEnergy (kcal): 283.1 kcal\nProtein (g): 0.4 g\nCarbohydrate (g): 13.8 g\nTotal Sugars (g): 8.5 g\nAdded Sugars (g): 8.5 g\nTotal Fat (g): 25.1 g\nSaturated Fat (g): 2.3 g\nTrans Fat (g): 0.5 g\nCholesterol (mg): 0.3 mg\nSodium (mg): 683.8 mg\nPer serving\nEnergy (kcal): 42.46 kcal 2.1%\nProtein (g): 0.06 g 0.1%\nCarbohydrate (g): 2.07 g\nTotal Sugars (g): 1.28 g\nAdded Sugars (g): 1.28 g 2.6%\nTotal Fat (g): 3.77 g 5.63%\nTrans Fat (g): 0.08 g 3.75%\nSodium (mg): 102.6 mg 5.1%';
+  const report = analyzeLabel({ ingredientText: ingredients, nutritionText: nutrition });
+  assert.equal(report.fullLabelStatus, 'complete');
+  assert.equal(report.nutrition.status, 'present');
+  assert.ok(report.nutrition.optionalMissing.includes('dietary_fibre'));
+  assert.equal(report.rating.status, 'provisional');
+  assert.deepEqual(report.missingRequests, []);
 });

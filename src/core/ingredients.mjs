@@ -92,7 +92,7 @@ function parseNode(part, parentId, index, sourceText, baseOffset) {
     order: index + 1,
     parentId: parentId || null,
     raw,
-    name: name || raw,
+    name: (name || raw).replace(/[.\s]+$/, '').trim(),
     normalized: normalizeName(name || raw),
     percentage,
     explanation: purpose.explanation,

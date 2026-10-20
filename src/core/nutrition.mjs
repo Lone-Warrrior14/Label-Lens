@@ -1,3 +1,5 @@
+import { INDIA_LABEL_PROFILE } from '../rules/india-label-profile.mjs';
+
 const NUTRIENTS = [
   ['added_sugars', ['added sugars', 'added sugar']],
   ['total_sugars', ['total sugars', 'sugars', 'sugar']],
@@ -22,19 +24,10 @@ const NUTRIENTS = [
   ['zinc', ['zinc']],
 ];
 
-const REQUIRED_NUTRIENTS = [
-  'energy',
-  'total_carbohydrate',
-  'total_sugars',
-  'added_sugars',
-  'protein',
-  'total_fat',
-  'saturated_fat',
-  'trans_fat',
-  'dietary_fibre',
-  'sodium',
-  'salt',
-];
+// Keep the parser's field semantics in the jurisdiction profile. This avoids
+// silently applying a US-style required-field list to an Indian label.
+const REQUIRED_NUTRIENTS = INDIA_LABEL_PROFILE.nutrition.required;
+const OPTIONAL_NUTRIENTS = INDIA_LABEL_PROFILE.nutrition.optional;
 
 const VALUE_PATTERN = /(?:(less\s+than|under|below|<|about|approximately|approx\.?|~)\s*)?(\d+(?:[.,]\d+)?)\s*(kcal|kilocalories?|cal|kj|kilojoules?|g|grams?|mg|milligrams?|mcg|μg|µg|%)/giu;
 const NUMBER_PATTERN = /(?:(less\s+than|under|below|<|about|approximately|approx\.?|~)\s*)?(\d+(?:[.,]\d+)?)\s*(kcal|kilocalories?|cal|kj|kilojoules?|g|grams?|mg|milligrams?|mcg|μg|µg|%)/giu;
@@ -201,7 +194,7 @@ function addDerivedEnergy(values, warnings) {
 export function parseNutrition(input) {
   const raw = String(input || '');
   if (!raw.trim()) {
-    return { status: 'missing', raw, serving: {}, values: [], missing: [...REQUIRED_NUTRIENTS], warnings: ['No nutrition panel was supplied.'], otherVisible: [] };
+    return { status: 'missing', raw, serving: {}, values: [], missing: [...REQUIRED_NUTRIENTS], optionalMissing: [...OPTIONAL_NUTRIENTS], warnings: ['No nutrition panel was supplied.'], otherVisible: [] };
   }
 
   const serving = extractServing(raw);
@@ -308,10 +301,11 @@ export function parseNutrition(input) {
   addDerivedEnergy(values, warnings);
   const present = new Set(values.map((value) => value.nutrient));
   const missing = REQUIRED_NUTRIENTS.filter((nutrient) => !present.has(nutrient));
-  if (missing.length) warnings.push(`These requested nutrients were not readable or not declared: ${missing.map((item) => item.replaceAll('_', ' ')).join(', ')}.`);
+  const optionalMissing = OPTIONAL_NUTRIENTS.filter((nutrient) => !present.has(nutrient));
+  if (missing.length) warnings.push(`These required Indian label fields were not readable or not declared: ${missing.map((item) => item.replaceAll('_', ' ')).join(', ')}.`);
   const status = !sawNutrient ? 'unreadable' : missing.length ? 'partial' : 'present';
 
-  return { status, raw, serving, values, missing, warnings, otherVisible };
+  return { status, raw, serving, values, missing, optionalMissing, warnings, otherVisible };
 }
 
 export function valueFor(nutrition, nutrient, basis = null, unit = null) {
@@ -336,4 +330,4 @@ export function calculateEnergyForQuantity(nutrition, quantity, unit) {
   return null;
 }
 
-export { REQUIRED_NUTRIENTS, NUTRIENTS };
+export { REQUIRED_NUTRIENTS, OPTIONAL_NUTRIENTS, NUTRIENTS };

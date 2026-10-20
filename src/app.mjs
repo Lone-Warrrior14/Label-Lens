@@ -1,6 +1,35 @@
 import { analyzeLabel } from './core/analyze.mjs';
+import { THEME_STORAGE_KEY, nextTheme, resolveTheme } from './core/theme.mjs';
 
 const $ = (selector) => document.querySelector(selector);
+
+const themeToggle = $('#theme-toggle');
+let currentTheme = resolveTheme(
+  document.documentElement.dataset.theme,
+  window.matchMedia('(prefers-color-scheme: dark)').matches,
+);
+
+function updateTheme(theme, persist = true) {
+  currentTheme = theme;
+  document.documentElement.dataset.theme = theme;
+  if (persist) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Private browsing or blocked storage should not disable the toggle.
+    }
+  }
+  if (!themeToggle) return;
+  const dark = theme === 'dark';
+  themeToggle.setAttribute('aria-pressed', String(dark));
+  themeToggle.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} theme`);
+  themeToggle.title = `Switch to ${dark ? 'light' : 'dark'} theme`;
+  themeToggle.querySelector('.theme-icon').textContent = dark ? '☀' : '☾';
+  themeToggle.querySelector('.theme-label').textContent = dark ? 'Light theme' : 'Dark theme';
+}
+
+updateTheme(currentTheme, false);
+themeToggle?.addEventListener('click', () => updateTheme(nextTheme(currentTheme)));
 
 function element(tag, attributes = {}, children = []) {
   const node = document.createElement(tag);
@@ -71,8 +100,8 @@ function renderProductCard(report) {
   const imageLabel = report.evidence.images.length
     ? report.evidence.images.map((image) => `${image.kind}: ${image.name}${image.ocrConfidence === null || image.ocrConfidence === undefined ? '' : ` (${image.ocrConfidence}% OCR)`}`).join(' · ')
     : 'Not supplied';
-  const dualLabel = report.evidence.dualValidation.length
-    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}`).join(' · ')
+  const llmLabel = report.evidence.llmValidation.length
+    ? report.evidence.llmValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.model ? ` (${validation.model})` : ''}`).join(' · ')
     : 'Not run';
   const info = [
     ['Product', report.product.name],
@@ -81,7 +110,7 @@ function renderProductCard(report) {
     ['Image evidence', imageLabel],
     ['Ingredients section', statusLabel(report.ingredients.status)],
     ['Nutrition section', statusLabel(report.nutrition.status)],
-    ['Dual validation', dualLabel],
+    ['Local LLM processing', llmLabel],
     ['Interpretation profile', report.profile.jurisdiction],
     ['Analysis status', report.fullLabelStatus === 'complete' ? 'Both sections readable' : 'Do not treat as complete'],
   ];
@@ -92,7 +121,7 @@ function renderProductCard(report) {
 function renderIngredientsCard(report) {
   const card = element('article', { className: 'result-card' });
   card.append(element('div', { className: 'card-heading' }, [
-    element('div', {}, [element('h3', {}, ['2. Ingredient-by-ingredient explanations']), element('span', { className: 'card-kicker' }, [`${report.ingredientCount} readable item${report.ingredientCount === 1 ? '' : 's'} retained in label order`])]),
+    element('div', {}, [element('h3', {}, ['3. Ingredient-by-ingredient explanations']), element('span', { className: 'card-kicker' }, [`${report.ingredientCount} readable item${report.ingredientCount === 1 ? '' : 's'} retained in label order`])]),
   ]));
   if (!report.ingredients.items.length) {
     card.append(element('div', { className: 'alert' }, ['No ingredient items were supplied, so ingredient explanations and an allergen conclusion are not available.']));
@@ -118,9 +147,51 @@ function renderIngredientsCard(report) {
   return card;
 }
 
+function renderRatingCard(report) {
+  const card = element('article', { className: 'rating-card' });
+  const rating = report.rating;
+  const scoreText = rating.scoreLow === null
+    ? 'Not rated'
+    : `${rating.scoreLow}/100`;
+  const rangeText = rating.scoreLow !== null && rating.scoreLow !== rating.scoreHigh
+    ? `Possible range: ${rating.scoreLow}–${rating.scoreHigh}/100`
+    : '';
+  const gradeText = rating.grade || '—';
+  const gradeClass = rating.grade?.charAt(0).toLocaleLowerCase('en-IN') || 'unrated';
+  card.append(element('div', { className: 'rating-card-heading' }, [
+    element('div', {}, [element('div', { className: 'eyebrow rating-eyebrow' }, ['At a glance']), element('h3', {}, ['2. LabelLens health signal']), element('p', { className: 'rating-subtitle' }, ['A quick summary of the declared ingredients and nutrition label.'])]),
+    element('div', { className: `grade-badge grade-${gradeClass}`, 'aria-label': `Rating ${gradeText}` }, [gradeText]),
+  ]));
+  const statusText = rating.status === 'available'
+    ? 'Based on readable label evidence'
+    : rating.status === 'provisional'
+      ? `Conservative grade from the lower bound of ${rating.gradeRange}; some score inputs are missing or uncertain`
+      : 'More readable label evidence is needed';
+  card.append(element('div', { className: 'rating-summary' }, [
+    element('div', {}, [element('strong', {}, [rating.status === 'not_rated' ? 'No grade yet' : `Grade ${gradeText}`]), element('span', { className: 'rating-status' }, [statusText]), rangeText ? element('span', { className: 'rating-range' }, [rangeText]) : '']),
+    element('span', { className: 'rating-score' }, [scoreText]),
+  ]));
+  if (rating.status !== 'not_rated') {
+    card.append(element('p', { className: 'rating-adjustments' }, [`Transparent adjustments: −${rating.ingredientPenalty + rating.nutritionPenalty} ingredient/nutrition concern points${rating.ingredientBonus ? ` · +${rating.ingredientBonus} positive ingredient points` : ''}.` ]));
+  }
+  const reasons = rating.reasons.slice(0, 6);
+  if (rating.status === 'not_rated') {
+    card.append(element('div', { className: 'rating-empty' }, [rating.notice]));
+  } else if (!reasons.length) {
+    card.append(element('div', { className: 'rating-empty' }, ['No additional high-priority ingredient or nutrient reason was raised. Review the detailed tables below for every declared value.']));
+  } else {
+    card.append(element('div', { className: 'rating-reasons' }, reasons.map((reason) => element('div', { className: `rating-reason ${reason.severity}` }, [
+      element('span', { className: 'reason-icon', 'aria-hidden': 'true' }, [reason.severity === 'concern' ? '!' : '✓']),
+      element('div', {}, [element('strong', {}, [reason.title]), element('p', {}, [reason.detail]), element('span', { className: 'reason-evidence' }, [`Evidence: ${reason.evidence}`])]),
+    ]))));
+  }
+  card.append(element('p', { className: 'rating-disclaimer' }, [rating.notice]));
+  return card;
+}
+
 function renderOrderCard(report) {
   const card = element('article', { className: 'result-card' });
-  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['3. Ingredient order insights']), element('span', { className: 'card-kicker' }, ['Order is evidence, not a percentage'])])]));
+  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['4. Ingredient order insights']), element('span', { className: 'card-kicker' }, ['Order is evidence, not a percentage'])])]));
   const text = report.ingredients.status === 'present'
     ? `The readable top-level ingredients are shown in the order supplied: ${report.ingredients.items.map((item) => item.name).join(' → ')}.`
     : 'Ingredient order cannot be interpreted until a readable ingredient list is supplied.';
@@ -136,13 +207,13 @@ function renderOrderCard(report) {
 
 function renderNutritionCard(report) {
   const card = element('article', { className: 'result-card' });
-  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['4. Nutrition facts table, including kcal']), element('span', { className: 'card-kicker' }, ['Original units and basis are preserved'])]), statusTag(statusLabel(report.nutrition.status), report.nutrition.status === 'present' ? 'present' : 'uncertain')]));
+  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['5. Nutrition facts table, including kcal']), element('span', { className: 'card-kicker' }, ['India profile · original units and basis preserved'])]), statusTag(statusLabel(report.nutrition.status), report.nutrition.status === 'present' ? 'present' : 'uncertain')]));
   if (!report.nutrition.values.length) {
     card.append(element('div', { className: 'alert' }, ['No nutrition values were readable. Upload another image or enter the panel manually; missing values are not treated as zero.']));
     return card;
   }
   const table = element('table');
-  table.append(element('thead', {}, [element('tr', {}, ['Nutrient', 'Label value', 'Basis', '%DV', 'Evidence'].map((text) => element('th', {}, [text])))]));
+  table.append(element('thead', {}, [element('tr', {}, ['Nutrient', 'Label value', 'Basis', '% RDA/serve', 'Evidence'].map((text) => element('th', {}, [text])))]));
   const body = element('tbody');
   const allVisibleValues = [...report.nutrition.values, ...(report.nutrition.otherVisible || [])];
   for (const value of allVisibleValues) {
@@ -159,8 +230,9 @@ function renderNutritionCard(report) {
   table.append(body);
   card.append(element('div', { className: 'table-wrap' }, [table]));
   if (report.nutrition.missing.length) {
-    card.append(element('p', { className: 'score-note' }, [`Not readable or not declared: ${report.nutrition.missing.map((item) => item.replaceAll('_', ' ')).join(', ')}. This does not mean those nutrients are zero.`]));
+    card.append(element('p', { className: 'score-note' }, [`Required Indian label fields not readable or not declared: ${report.nutrition.missing.map((item) => item.replaceAll('_', ' ')).join(', ')}. This does not mean those nutrients are zero.`]));
   }
+  if (report.nutrition.optionalMissing?.length) card.append(element('p', { className: 'score-note' }, [`Optional fields not declared on this label: ${report.nutrition.optionalMissing.map((item) => item.replaceAll('_', ' ')).join(', ')}. Optional does not mean zero.`]));
   const energyValues = report.nutrition.values.filter((value) => value.nutrient === 'energy');
   const energyText = energyValues.length
     ? energyValues.map((value) => `${amountLabel(value)} ${value.unit || ''} ${basisLabel(value.basis)}${value.derived ? ' (derived, not visible on the label)' : ''}`).join(' · ')
@@ -175,7 +247,7 @@ function renderNutritionCard(report) {
 
 function renderConcernsCard(report) {
   const card = element('article', { className: 'result-card' });
-  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['5. Potential concerns and declared allergens']), element('span', { className: 'card-kicker' }, ['Flags are prompts for investigation, not diagnoses'])])]));
+  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['6. Potential concerns and declared allergens']), element('span', { className: 'card-kicker' }, ['Flags are prompts for investigation, not diagnoses'])])]));
   const panels = element('div', { className: 'two-panels' });
   const allergenPanel = element('div', { className: 'panel' }, [element('h3', {}, ['Declared / detected allergens'])]);
   if (report.allergens.status === 'unknown') {
@@ -198,10 +270,10 @@ function renderConcernsCard(report) {
 
 function renderScoreCard(report) {
   const card = element('article', { className: 'result-card' });
-  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['6. Transparent rating and scoring breakdown']), element('span', { className: 'card-kicker' }, ['Separate nutrition signal — not a universal health score'])])]));
+  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['7. Transparent rating and scoring breakdown']), element('span', { className: 'card-kicker' }, ['Supporting math behind the A–D signal'])])]));
   const score = report.score;
-  const scoreText = score.status === 'not_available' ? 'Not available' : score.status === 'not_enough_declared_data' ? 'Insufficient declared %DV' : score.low === score.high ? `${score.low}/100` : `${score.low}–${score.high}/100`;
-  const scoreDescription = score.status === 'available' ? `${score.knownWeight} of ${score.maximumWeight} possible points are based on usable declared label data.` : score.status === 'not_enough_declared_data' ? 'Amounts without a clear serving-basis %DV are displayed but not converted into an unsupported universal rating.' : 'A nutrition panel is required before this separate nutrition signal can be calculated.';
+  const scoreText = score.status === 'not_available' ? 'Not available' : score.status === 'not_enough_declared_data' ? 'Insufficient declared % RDA' : score.low === score.high ? `${score.low}/100` : `${score.low}–${score.high}/100`;
+  const scoreDescription = score.status === 'available' ? `${score.knownWeight} of ${score.maximumWeight} possible points are based on usable declared label data.` : score.status === 'not_enough_declared_data' ? 'Amounts without a clear serving-basis % RDA are displayed but not converted into an unsupported universal rating.' : 'A nutrition panel is required before this separate nutrition signal can be calculated.';
   card.append(element('div', { className: 'score-hero' }, [element('div', { className: 'score-number' }, [scoreText]), element('p', {}, [scoreDescription])]));
   card.append(element('p', { className: 'score-note' }, [score.criteria || score.notice]));
   const table = element('table');
@@ -209,7 +281,7 @@ function renderScoreCard(report) {
   table.append(element('thead', {}, [element('tr', {}, ['Component', 'Label evidence', 'Points', 'Why'].map((text) => element('th', {}, [text])))]));
   const body = element('tbody');
   for (const component of score.components) {
-    const evidence = component.value ? `${amountLabel(component.value)}${unitLabel(component.value)} · ${basisLabel(component.value.basis)}${component.value.declaredDv === undefined ? '' : ` · ${component.value.declaredDv}% DV`}` : 'Not usable / missing';
+    const evidence = component.value ? `${amountLabel(component.value)}${unitLabel(component.value)} · ${basisLabel(component.value.basis)}${component.value.declaredDv === undefined ? '' : ` · ${component.value.declaredDv}% RDA`}` : 'Not usable / missing';
     const points = component.low === null ? '—' : component.low === component.high ? `${component.low.toFixed(1)} / ${component.weight}` : `${component.low.toFixed(1)}–${component.high.toFixed(1)} / ${component.weight}`;
     body.append(element('tr', {}, [element('td', {}, [element('strong', {}, [component.label])]), element('td', {}, [evidence]), element('td', { className: 'points' }, [points]), element('td', {}, [component.explanation])]));
   }
@@ -220,26 +292,33 @@ function renderScoreCard(report) {
 
 function renderEvidenceCard(report) {
   const card = element('article', { className: 'result-card' });
-  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['7. Evidence, uncertainty and limitations']), element('span', { className: 'card-kicker' }, ['What this report can and cannot prove'])])]));
+  card.append(element('div', { className: 'card-heading' }, [element('div', {}, [element('h3', {}, ['8. Evidence, uncertainty and limitations']), element('span', { className: 'card-kicker' }, ['What this report can and cannot prove'])])]));
   const grid = element('div', { className: 'evidence-grid' });
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Cross-check status']), element('p', {}, [report.evidence.crossCheckMessage])]));
   grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Section completeness']), element('p', {}, [`Ingredients: ${statusLabel(report.evidence.sectionStatus.ingredients)} · Nutrition: ${statusLabel(report.evidence.sectionStatus.nutrition)}`])]));
-  const dualText = report.evidence.dualValidation.length
-    ? report.evidence.dualValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.correctionStatus && validation.correctionStatus !== 'not_run' ? ` · ${validation.correctionStatus.replaceAll('_', ' ')}` : ''}${validation.models.length ? ` (${validation.models.join(' + ')})` : ''}`).join(' · ')
+  const llmText = report.evidence.llmValidation.length
+    ? report.evidence.llmValidation.map((validation) => `${validation.kind}: ${validation.status.replaceAll('_', ' ')}${validation.correctionStatus && validation.correctionStatus !== 'not_run' ? ` · ${validation.correctionStatus.replaceAll('_', ' ')}` : ''}${validation.model ? ` (${validation.model})` : ''}`).join(' · ')
     : 'Not run. The deterministic OCR transcription remains the source for analysis.';
-  grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Independent validators']), element('p', {}, [dualText])]));
+  grid.append(element('div', { className: 'evidence-item' }, [element('h3', {}, ['Local LLM processing']), element('p', {}, [llmText])]));
   card.append(grid);
-  for (const validation of report.evidence.dualValidation) {
-    if (validation.correctionStatus === 'confirmed_correction' && validation.consensusText) {
+  for (const validation of report.evidence.llmValidation) {
+    if (validation.sectionHeader || validation.headers.length) {
+      card.append(element('div', { className: 'llm-headers' }, [
+        element('strong', {}, [`LLM JSON headers for ${validation.kind}`]),
+        validation.sectionHeader ? element('p', {}, [`Section header: ${validation.sectionHeader}`]) : '',
+        validation.headers.length ? element('ul', {}, validation.headers.map((header) => element('li', {}, [`${header.name || 'Header'}${header.value ? `: ${header.value}` : ''}${header.type ? ` · ${header.type}` : ''}`]))) : '',
+      ]));
+    }
+    if (validation.correctionStatus === 'model_correction' && validation.consensusText) {
       card.append(element('div', { className: 'llm-correction confirmed' }, [
-        element('strong', {}, [`LLM correction confirmed for ${validation.kind}`]),
-        element('p', {}, ['Both independent validators agreed on this corrected transcription, which was used for the deterministic analysis:']),
+        element('strong', {}, [`LLM correction returned for ${validation.kind}`]),
+        element('p', {}, ['The selected local vision model returned this corrected transcription. Review it against the image before relying on it:']),
         element('pre', {}, [validation.consensusText]),
       ]));
     } else if (validation.status === 'conflict') {
       card.append(element('div', { className: 'llm-correction conflict' }, [
         element('strong', {}, [`LLM conflict for ${validation.kind}`]),
-        element('p', {}, ['The validators returned different interpretations. No LLM correction was applied; verify the image manually.']),
+        element('p', {}, ['The LLM result was not usable. No correction was applied; verify the image manually.']),
         ...validation.correctedTexts.map((text, index) => element('pre', {}, [`Validator ${index + 1}:\n${text}`])),
       ]));
     }
@@ -259,7 +338,7 @@ function render(report) {
   const alert = $('#completion-alert');
   clear(alert);
   if (report.fullLabelStatus !== 'complete') alert.append(element('div', { className: 'alert' }, ['Full-label analysis is not complete. ', ...report.missingRequests]));
-  content.append(renderProductCard(report), renderIngredientsCard(report), renderOrderCard(report), renderNutritionCard(report), renderConcernsCard(report), renderScoreCard(report), renderEvidenceCard(report));
+  content.append(renderProductCard(report), renderRatingCard(report), renderIngredientsCard(report), renderOrderCard(report), renderNutritionCard(report), renderConcernsCard(report), renderScoreCard(report), renderEvidenceCard(report));
   results.classList.remove('hidden');
   results.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -365,36 +444,34 @@ async function runDualValidation(kind) {
   const refs = imageRefs[kind];
   refs.button.disabled = true;
   refs.validateButton.disabled = true;
-  setOcrStatus(kind, 'OCR complete. Running two local validators sequentially…', 'busy');
+  setOcrStatus(kind, 'OCR complete. Processing with one local LLM…', 'busy');
   try {
     const formData = new FormData();
     formData.append('image', file, file.name);
     formData.append('kind', kind);
     formData.append('ocrText', ocrText);
-    const response = await fetch('/api/dual-validate', { method: 'POST', body: formData });
+    const response = await fetch('/api/llm-validate', { method: 'POST', body: formData });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || 'Dual validation failed.');
+    if (!response.ok) throw new Error(payload.error || 'LLM processing failed.');
     validationResults[kind] = payload;
     validationComplete[kind] = true;
-    if (payload.comparison.status === 'agreement') {
-      if (payload.comparison.correctionStatus === 'confirmed_correction' && payload.comparison.consensusText) {
-        refs.text.value = payload.comparison.consensusText;
-        setOcrStatus(kind, 'Both validators agreed and corrected the OCR transcription. Review the corrected text against the image.', 'success');
-      } else {
-        setOcrStatus(kind, 'OCR + two validators agree. Review the image before relying on the result.', 'success');
-      }
+    if (payload.comparison.consensusText && payload.comparison.correctionStatus === 'model_correction') {
+      refs.text.value = payload.comparison.consensusText;
+      setOcrStatus(kind, `LLM returned a correction using ${payload.model}. Review it against the image.`, 'success');
+    } else if (payload.comparison.status === 'single_model' && ['no_change', 'needs_review'].includes(payload.comparison.correctionStatus)) {
+      setOcrStatus(kind, `LLM processing complete using ${payload.model}. Review the text against the image.`, payload.comparison.correctionStatus === 'needs_review' ? 'error' : 'success');
     } else {
-      setOcrStatus(kind, 'The two validators disagree. Review the highlighted uncertainty in the report.', 'error');
+      setOcrStatus(kind, 'The LLM result needs review. OCR was kept as the source.', 'error');
     }
     return payload;
   } catch (error) {
     validationResults[kind] = {
       kind,
-      models: [],
-      validators: [],
+      model: null,
+      validator: null,
       comparison: { status: 'unavailable', conflicts: [error.message] },
     };
-    setOcrStatus(kind, `Dual validation unavailable: ${error.message} OCR remains available.`, 'error');
+    setOcrStatus(kind, `LLM processing unavailable: ${error.message} OCR remains available.`, 'error');
     return validationResults[kind];
   } finally {
     refs.button.disabled = false;

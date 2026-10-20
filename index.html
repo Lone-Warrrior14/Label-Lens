@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="LabelLens analyses the ingredient list and nutrition panel without inventing missing label values.">
     <title>LabelLens · Complete label analysis</title>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem('labellens-theme');
+          const preferred = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          document.documentElement.dataset.theme = stored === 'dark' || stored === 'light' ? stored : preferred;
+        } catch {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -15,6 +26,10 @@
           <span>Label<span class="brand-light">Lens</span></span>
         </a>
         <span class="header-note">Evidence-first food label analysis</span>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Switch to dark theme">
+          <span class="theme-icon" aria-hidden="true">☾</span>
+          <span class="theme-label">Dark theme</span>
+        </button>
       </div>
     </header>
 
@@ -51,7 +66,7 @@
                 <div><strong id="ingredients-image-name">Image selected</strong><span id="ingredients-image-size" class="muted-line"></span></div>
               </div>
               <button id="ingredients-ocr" class="secondary-button" type="button" disabled>Extract ingredients with OCR</button>
-              <button id="ingredients-validate" class="secondary-button validator-button" type="button" disabled>Run two-LLM validation</button>
+              <button id="ingredients-validate" class="secondary-button validator-button" type="button" disabled>Process with local LLM</button>
               <span id="ingredients-ocr-status" class="ocr-status" aria-live="polite">Choose a clear, tightly cropped image.</span>
             </div>
             <div class="image-upload-card">
@@ -62,7 +77,7 @@
                 <div><strong id="nutrition-image-name">Image selected</strong><span id="nutrition-image-size" class="muted-line"></span></div>
               </div>
               <button id="nutrition-ocr" class="secondary-button" type="button" disabled>Extract nutrition with OCR</button>
-              <button id="nutrition-validate" class="secondary-button validator-button" type="button" disabled>Run two-LLM validation</button>
+              <button id="nutrition-validate" class="secondary-button validator-button" type="button" disabled>Process with local LLM</button>
               <span id="nutrition-ocr-status" class="ocr-status" aria-live="polite">Choose a clear, tightly cropped image.</span>
             </div>
           </div>
@@ -104,7 +119,7 @@
           </fieldset>
 
           <div class="form-actions">
-            <p class="form-disclaimer">Select both images and analyse to run OCR plus two sequential local Ollama validators automatically. You can also run either OCR or two-LLM validation separately, edit the result, and then analyse.</p>
+            <p class="form-disclaimer">Select both images and analyse to run OCR plus one local Ollama vision model. You can also run OCR or LLM processing separately, edit the result, and then analyse.</p>
             <button class="primary-button" type="submit">OCR and analyse label <span aria-hidden="true">→</span></button>
           </div>
           <p id="form-error" class="form-error hidden" role="alert"></p>

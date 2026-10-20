@@ -4,14 +4,83 @@ import { mkdir } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tesseract from 'tesseract.js';
-import { compareValidatorResults, parseValidatorJson } from '../src/core/validation.mjs';
+import { correctionStatus, normalizeValidatorPayload, nutritionTextFromValidatorPayload, parseValidatorJson } from '../src/core/validation.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]+$/, '');
 const port = Number(process.env.PORT || 4173);
 const maxUploadBytes = 15 * 1024 * 1024;
 const ollamaUrl = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
-const requestedValidatorA = process.env.OLLAMA_VALIDATOR_A || 'gemma3:latest';
-const requestedValidatorB = process.env.OLLAMA_VALIDATOR_B || 'qwen3-vl:4b';
+const requestedModel = process.env.OLLAMA_MODEL || 'gemma3:latest';
+const validatorJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['section_status', 'section_header', 'headers', 'corrected_text', 'facts', 'warnings'],
+  properties: {
+    section_status: { type: 'string', enum: ['present', 'partial', 'unreadable'] },
+    section_header: { type: 'string' },
+    headers: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'value', 'type', 'evidence'],
+        properties: {
+          name: { type: 'string' },
+          value: { type: 'string' },
+          type: { type: 'string', enum: ['section', 'serving', 'column', 'advisory', 'other'] },
+          evidence: { type: 'string' },
+          values: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['amount', 'unit', 'basis', 'percent_rda', 'evidence'],
+              properties: {
+                amount: { type: 'string' },
+                unit: { type: 'string' },
+                basis: { type: 'string' },
+                percent_rda: { type: 'string' },
+                evidence: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    corrected_text: { type: 'string' },
+    facts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['key', 'value', 'unit', 'basis', 'values', 'evidence'],
+        properties: {
+          key: { type: 'string' },
+          value: { type: 'string' },
+          unit: { type: 'string' },
+          basis: { type: 'string' },
+          values: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['amount', 'unit', 'basis', 'percent_rda', 'evidence'],
+              properties: {
+                amount: { type: 'string' },
+                unit: { type: 'string' },
+                basis: { type: 'string' },
+                percent_rda: { type: 'string' },
+                evidence: { type: 'string' },
+              },
+            },
+          },
+          evidence: { type: 'string' },
+        },
+      },
+    },
+    warnings: { type: 'array', items: { type: 'string' } },
+  },
+};
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -152,29 +221,30 @@ async function availableVisionModels() {
     .map((model) => model.name);
 }
 
-function chooseValidatorModels(available) {
-  const fallbackOrder = ['qwen3-vl:4b', 'qwen2.5vl:7b', 'gemma3:latest'];
-  const first = available.includes(requestedValidatorA) ? requestedValidatorA : available[0];
-  const secondCandidates = [requestedValidatorB, ...fallbackOrder];
-  const second = secondCandidates.find((candidate) => candidate !== first && available.includes(candidate));
-  if (!first || !second) {
-    throw new Error(`Dual validation needs two installed vision models. Available: ${available.join(', ') || 'none'}. Configure OLLAMA_VALIDATOR_A/B or install another vision model.`);
+function chooseValidatorModel(available) {
+  const model = available.includes(requestedModel) ? requestedModel : available[0];
+  if (!model) {
+    throw new Error(`No installed vision model was found. Install gemma3:latest or configure OLLAMA_MODEL. Available: ${available.join(', ') || 'none'}.`);
   }
-  return [first, second];
+  return model;
 }
 
 function validatorPrompt(kind, ocrText) {
   const sectionInstructions = kind === 'nutrition'
-    ? 'Extract every visible nutrition value. Keep kcal and kJ separate, preserve units, and label each value as per serving, per 100 g, per 100 ml, per container, or unknown. Do not infer missing values.'
-    : 'Extract every visible ingredient in original order. Preserve parenthetical compound ingredients and any explicitly printed percentages. Do not infer percentages from order.';
+    ? 'Extract every visible nutrition value and every nutrition header. First identify the complete column header row and then read each row across all numeric columns from left to right. This image may use four columns: row label, Per 100 g, Per serve 15 g, and % RDA/serve. Capture headers such as Nutrition Information, Serving size, Servings per container, Per serving, Per 100 g, Per serve 15 g and % RDA/serve. Keep kcal and kJ separate, preserve units, and label each value with its visible basis. Check explicitly for these rows if visible: Energy, Protein, Carbohydrate, Total Sugars, Added Sugars, Total Fat, Saturated Fat, Trans Fat, Dietary Fibre, Salt, Cholesterol and Sodium, plus any visible vitamin or mineral rows. The OCR may omit or misspell a row, so inspect the image rather than copying OCR blindly. For every nutrition row, the values array MUST contain one object for EVERY visible numeric cell in left-to-right order, including empty percent cells; never collapse a row to only its first value. Put % RDA numbers in percent_rda, not amount. Use empty strings for unreadable or blank cells and add a warning. The corrected_text MUST preserve the complete table structure with all readable columns. Do not infer missing values.'
+    : 'Extract every visible ingredient in original order and every visible section/advisory header. Capture headers such as Ingredients, Contains and May contain. Preserve parenthetical compound ingredients and any explicitly printed percentages. Do not infer percentages from order.';
   return `You are one independent validator in a food-label extraction system. The image is primary evidence; OCR is only an aid. ${sectionInstructions}
 
 Return JSON only with this exact shape:
 {
   "section_status": "present" | "partial" | "unreadable",
+  "section_header": "exact main section heading, or empty if unreadable",
+  "headers": [
+    {"name": "exact visible header", "value": "header value or empty", "type": "section | serving | column | advisory | other", "evidence": "short exact text from image"}
+  ],
   "corrected_text": "exact complete transcription supported by the image, preserving line order and visible units",
   "facts": [
-    {"key": "stable field key or ingredient_1", "value": "exact visible value", "unit": "visible unit or empty", "basis": "visible basis or unknown", "evidence": "short exact text from image"}
+    {"key": "stable field key or ingredient_1", "value": "first or primary exact visible value", "unit": "visible unit or empty", "basis": "visible basis or unknown", "values": [{"amount": "exact amount", "unit": "visible unit", "basis": "column header basis", "percent_rda": "visible percent or empty", "evidence": "short exact cell text"}], "evidence": "short exact text from image"}
   ],
   "warnings": ["only visible uncertainty or conflict"]
 }
@@ -193,7 +263,10 @@ async function callOllamaValidator(model, image, kind, ocrText) {
     body: JSON.stringify({
       model,
       stream: false,
-      keep_alive: 0,
+      format: validatorJsonSchema,
+        // Keep one model warm while the user validates the second image.
+        // This avoids loading two models and avoids reloading one between sections.
+        keep_alive: '5m',
       options: { temperature: 0, num_ctx: 8192, num_predict: 2048 },
       messages: [
         { role: 'system', content: 'You are a conservative, evidence-first food-label validator. Do not reveal reasoning; return only the requested JSON.' },
@@ -205,13 +278,13 @@ async function callOllamaValidator(model, image, kind, ocrText) {
   const payload = await response.json();
   const raw = payload.message?.content || '';
   try {
-    return { model, status: 'ok', parsed: parseValidatorJson(raw), raw };
+    return { model, status: 'ok', parsed: normalizeValidatorPayload(parseValidatorJson(raw)), raw };
   } catch (error) {
     return { model, status: 'invalid', parsed: null, raw, error: error.message };
   }
 }
 
-async function handleDualValidation(request, response) {
+async function handleLlmValidation(request, response) {
   try {
     const contentType = request.headers['content-type'] || '';
     if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
@@ -224,17 +297,43 @@ async function handleDualValidation(request, response) {
     const kind = parts.find((part) => part.name === 'kind')?.data.toString('utf8').trim() || 'label';
     const ocrText = parts.find((part) => part.name === 'ocrText')?.data.toString('utf8') || '';
     if (!image?.data.length || !ocrText.trim()) {
-      json(response, 400, { error: 'An image and non-empty OCR text are required for dual validation.' });
+      json(response, 400, { error: 'An image and non-empty OCR text are required for LLM validation.' });
       return;
     }
-    const models = chooseValidatorModels(await availableVisionModels());
-    // Deliberately sequential: only one vision model is loaded at a time on a small GPU.
-    const results = [];
-    for (const model of models) results.push(await callOllamaValidator(model, image.data, kind, ocrText));
-    json(response, 200, { kind, models, validators: results, comparison: compareValidatorResults(results, { kind, ocrText }), engine: 'local Ollama sequential dual validation' });
+    const model = chooseValidatorModel(await availableVisionModels());
+    const validator = await callOllamaValidator(model, image.data, kind, ocrText);
+    const parsed = validator.parsed;
+    const canonicalText = kind === 'nutrition' ? nutritionTextFromValidatorPayload(parsed, ocrText) : parsed?.corrected_text;
+    if (parsed && canonicalText) parsed.corrected_text = canonicalText;
+    const consensusText = String(canonicalText || '').trim() || null;
+    const correctionState = validator.status !== 'ok' ? 'needs_review' : correctionStatus(consensusText, ocrText);
+    const validation = {
+      kind,
+      model,
+      status: validator.status,
+      raw: validator.raw,
+      parsed,
+      error: validator.error || null,
+      correctionStatus: correctionState,
+      consensusText,
+    };
+    json(response, 200, {
+      kind,
+      model,
+      validator,
+      comparison: {
+        status: 'single_model',
+        correctionStatus: correctionState,
+        consensusText,
+        correctedTexts: consensusText ? [consensusText] : [],
+        conflicts: [],
+      },
+      validation,
+      engine: 'local Ollama single vision validator',
+    });
   } catch (error) {
-    console.error('Dual validation failed:', error);
-    json(response, 503, { error: `Dual validation unavailable: ${error.message}` });
+    console.error('LLM validation failed:', error);
+    json(response, 503, { error: `LLM validation unavailable: ${error.message}` });
   }
 }
 
@@ -243,8 +342,8 @@ const server = createServer(async (request, response) => {
     await handleOcr(request, response);
     return;
   }
-  if (request.method === 'POST' && request.url?.split('?')[0] === '/api/dual-validate') {
-    await handleDualValidation(request, response);
+  if (request.method === 'POST' && request.url?.split('?')[0] === '/api/llm-validate') {
+    await handleLlmValidation(request, response);
     return;
   }
   if (request.method !== 'GET' && request.method !== 'HEAD') {

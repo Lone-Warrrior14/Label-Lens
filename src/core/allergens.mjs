@@ -8,6 +8,7 @@ const ALLERGEN_ALIASES = {
   milk: ['milk', 'whey', 'casein', 'caseinate', 'lactose', 'butter', 'ghee', 'cream', 'cheese', 'curd', 'paneer'],
   'tree nuts': ['almond', 'cashew', 'walnut', 'pistachio', 'hazelnut', 'pecan', 'macadamia', 'brazil nut', 'chestnut'],
   sesame: ['sesame', 'til', 'tahini'],
+  mustard: ['mustard', 'mustard seed', 'mustard powder'],
   sulphites: ['sulphite', 'sulfite', 'sulphur dioxide', 'sulfur dioxide', 'e220', 'e221', 'e222', 'e223', 'e224', 'e226', 'e227', 'e228'],
 };
 
